@@ -1,0 +1,285 @@
+#!/usr/local/bin/bash
+
+pushd /Users/veilig/chef-repo
+
+AVAILABILITY_ZONE="us-east-1c"
+
+while [ "$1" != "" ]; do
+    case $1 in
+        -a | --ami )
+            AMI=$2
+        ;;
+        -i | --identity-file )
+            IDENTITY_FILE=$2
+        ;;
+        -f | --flavor )
+            FLAVOR=$2
+        ;;
+        -n | --node-name )
+            NODE_NAME=$2
+        ;;
+        -r | --run-list )
+            RUN_LIST=$2
+        ;;
+        -s | --subnet )
+            SUBNET=$2
+        ;;
+        -T | --tags )
+            TAGS=$2
+        ;;
+        --associate-eip )
+            IP_ADDRESS=$2
+        ;;
+        --iam-profile )
+            IAM_PROFILE=$2
+    esac
+    shift
+done
+
+if [ -z "$RUN_LIST" ]; then
+    printf "-- You need to specify a run-list parameter (-r | --run-list) --"
+    printf "Here is an example run list:"
+    printf "role[base],recipe[aws],recipe[ine-aws::ebs],role[laravel]"
+    exit 1
+fi
+
+# Just default to the ubuntu 14.04 paravirtual ami
+if [ -z "$AMI" ]; then
+    AMI="ami-e84d8480"
+    printf "\nKnife ec2 server create command generator:\n"
+    printf "Ubuntu Server 14.04 LTS (PV), SSD Volume Type (${AMI}) 64-bit\n"
+else
+    printf "AMI: (${AMI})"
+fi
+
+if [ -z "$FLAVOR" ]; then
+    declare -a PARA_FLAVORS=('t1.micro' 'm3.medium' 'm3.large' 'm3.xlarge' 'm3.2xlarge' 'm1.small' 'm1.medium' 'm1.large' 'm1.xlarge' 'c3.large' 'c3.xlarge' 'c3.2xlarge' 'c3.4xlarge' 'c3.8xlarge' 'c1.medium' 'c1.xlarge' 'm2.xlarge' 'm2.2xlarge' 'm2.4xlarge' 'hi1.4xlarge' 'hs1.8xlarge')
+    printf "\nWhat flavor do you want to use? [${FLAVOR}]\n"
+
+    select FLAVOR in "${PARA_FLAVORS[@]}"; do
+        if [ -n "$FLAVOR" ]; then
+            break;
+        else
+            : # noop
+        fi
+    done
+fi
+
+if [ -z "$IDENTITY_FILE" ]; then
+    while true; do
+        default="~/.ssh/rtp-ine-aws.pem"
+        printf "\nPlease enter your identity file [$default]:"
+        read IDENTITY_FILE
+        IDENTITY_FILE=${IDENTITY_FILE:-$default}
+        if [ -n "$IDENTITY_FILE" ]; then
+            break;
+        else
+            : # noop
+        fi
+    done
+fi
+
+if [ -z "$NODE_NAME" ]; then
+    while true; do
+        read -p "Please enter the node name:" NODE_NAME
+        if [ -n "$NODE_NAME" ]; then
+            break;
+        else
+            : # noop
+        fi
+    done
+fi
+
+if [ -z "$IP_ADDRESS" ]; then
+    printf "\nDo you want to associate an existing EIP with instance after launch? [Y|N]\n"
+    OPTIONS="Y N"
+    select associate in $OPTIONS; do
+        if [ "$associate" = "Y" ]; then
+            break;
+        elif [ "$associate" = "N" ]; then
+            break;
+        else
+            : # noop
+        fi
+    done
+
+    if [ "$associate" = "Y" ]; then
+        while true; do
+            read -p "Please enter the Elastic IP:" IP_ADDRESS
+            if [ -n "$IP_ADDRESS" ]; then
+                break;
+            else
+                : # noop
+            fi
+        done
+    else
+        : # noop
+    fi
+fi
+
+if [ -z "$SUBNET" ]; then
+    printf "\nDo you want to associate this node to a VPC subnet? [Y|N]\n"
+    OPTIONS="Y N"
+    select subnet in $OPTIONS; do
+        if [ "$subnet" = "Y" ]; then
+            SECURITY_GROUPS="-g sg-5c44d638,sg-7544d611"
+
+            printf "fetching subnets from AWS...\n"
+
+            foo=`aws ec2 describe-subnets | jq '[.Subnets[] | {key: .Tags[0].Value, value: .SubnetId}]'`
+
+            declare -A subnets=( )
+            networkNames=()
+
+            while IFS="=" read -r key value
+            do
+              subnets[$key]=$value
+              networkNames+=($key)
+            done < <(jq -r ".|map(\"\(.key)=\(.value|tostring)\")|.[]" <<< $foo)
+
+            #for key in "${!subnets[@]}"; do
+            #  name=${subnets[$key]}
+            #  printf '%s) %s\n' "$key" "$name"
+            #done
+
+            printf "\nWhat Subnet would you like to use?\n"
+
+            select index in "${networkNames[@]}"; do
+                if [[ -n $index ]]; then
+                    SUBNET=${subnets[$index]}
+                    break;
+                else
+                    : # noop
+                fi
+            done
+
+            server_connect_attributes=(
+                'public ip address'
+                'private ip address'
+            )
+
+            printf "\nHow should chef connect to the server in the [$index] subnet?\n"
+            select attribute in "${server_connect_attributes[@]}"; do
+                if [ "$attribute" = "public ip address" ]; then
+                    SERVER_CONNECT_ATTRIBUTE="public_ip_address"
+                    break;
+                elif [ "$attribute" = "private ip address" ]; then
+                    SERVER_CONNECT_ATTRIBUTE="private_ip_address"
+                    break;
+                fi
+            done
+            break;
+        elif [ "$subnet" = "N" ]; then
+            SECURITY_GROUPS="-G WEB,SSH,GRAYLOG"
+            SERVER_CONNECT_ATTRIBUTE="public_ip_address"
+            break;
+        else
+            : # noop
+        fi
+    done
+fi
+
+if [ -z "$TAGS" ]; then
+    printf "\nDo you want to add any tags? [Y|N]\n"
+    printf "Some examples [Group=files, Type=webserver]\n"
+    OPTIONS="Y N"
+    select tag in $OPTIONS; do
+        if [ "$tag" = "Y" ]; then
+            break;
+        elif [ "$tag" = "N" ]; then
+            break;
+        else
+            : # noop
+        fi
+    done
+
+    if [ "$tag" = "Y" ]; then
+        echo "Hit enter to esc."
+        while true; do
+            read -p "Add tag [Tag=Value]:" TAG
+            if [ -n "$TAG" ]; then
+                TAGS="$TAG,$TAGS"
+            else
+                break;
+            fi
+        done
+        TAGS="${TAGS%?}"
+    else
+        : # noop
+    fi
+fi
+
+if [ -z "$IAM_PROFILE" ]; then
+    default="CodeDeploy-EC2"
+    while true; do
+        printf "\nPlease enter the IAM Profile [$default]: "
+        read IAM_PROFILE
+        IAM_PROFILE=${IAM_PROFILE:-$default}
+        if [ -n "$IAM_PROFILE" ]; then
+            break;
+        else
+            : # noop
+        fi
+    done
+fi
+
+printf "\n\n====================\n"
+printf "HERE IS YOUR COMMAND"
+printf "\n====================\n\n"
+
+echo "knife ec2 server create $SECURITY_GROUPS \\"
+if [ -n "$IP_ADDRESS" ]; then
+    echo "--associate-eip $IP_ADDRESS \\"
+fi
+echo "--flavor $FLAVOR \\"
+echo "--image $AMI \\"
+echo "--identity-file $IDENTITY_FILE \\"
+echo "--availability-zone $AVAILABILITY_ZONE \\"
+echo "--node-name $NODE_NAME \\"
+if [ -n "$TAGS" ]; then
+    echo "-T $TAGS \\"
+fi
+if [ -n "$SUBNET" ]; then
+    echo "--subnet $SUBNET \\"
+fi
+echo "--iam-profile $IAM_PROFILE \\"
+echo "--run-list \"$RUN_LIST\" \\"
+echo "--json-attributes '{\"apache\": {\"server_name\": \"$NODE_NAME\"}, \"inewebapp\": {\"name\": \"$NODE_NAME\"}, \"ineaws\": {\"ebs\": {\"name\": \"$NODE_NAME\"}, \"rds\": {\"instance\": \"$NODE_NAME\", \"db_name\": \"prod01\"}}}' \\"
+echo "--ssh-user ubuntu \\"
+echo "--server-connect-attribute $SERVER_CONNECT_ATTRIBUTE \\"
+echo "--secret-file ~/.chef/encrypted_data_bag_secret"
+
+printf "\nDo you want to run this command? [Y|N]\n"
+options="Y N"
+select run in $options; do
+    if [ "$run" = "Y" ]; then
+        cmd="knife ec2 server create $SECURITY_GROUPS"
+        if [ -n "$IP_ADDRESS" ]; then
+            cmd="$cmd --associate-eip $IP_ADDRESS"
+        fi
+        cmd="$cmd --flavor $FLAVOR"
+        cmd="$cmd --image $AMI"
+        cmd="$cmd --identity-file $IDENTITY_FILE"
+        cmd="$cmd --availability-zone $AVAILABILITY_ZONE"
+        cmd="$cmd --node-name $NODE_NAME"
+        if [ -n "$TAGS" ]; then
+            cmd="$cmd -T $TAGS"
+        fi
+        if [ -n "$SUBNET" ]; then
+            cmd="$cmd --subnet $SUBNET"
+        fi
+        cmd="$cmd --iam-profile $IAM_PROFILE"
+        cmd="$cmd --run-list \"$RUN_LIST\""
+        cmd="$cmd --json-attributes '{\"apache\": {\"server_name\": \"$NODE_NAME\"}, \"inewebapp\": {\"name\": \"$NODE_NAME\"}, \"ineaws\": {\"ebs\": {\"name\": \"$NODE_NAME\"}, \"rds\": {\"instance\": \"$NODE_NAME\", \"db_name\": \"prod01\"}}}'"
+        cmd="$cmd --ssh-user ubuntu"
+        cmd="$cmd --server-connect-attribute $SERVER_CONNECT_ATTRIBUTE"
+        cmd="$cmd --secret-file ~/.chef/encrypted_data_bag_secret"
+
+        eval $cmd
+        break;
+    elif [ "$run" = "N" ]; then
+        break;
+    else
+        : # noop
+    fi
+done

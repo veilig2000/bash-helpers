@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# Purge all branches from the remote git repo except
+# develop
+# master
+# HEAD
+# v1
+
+TEST=false
+
+while [ "$1" != "" ]; do
+    case $1 in
+        -h | --help )
+            HELP=true
+        ;;
+        -n | --dry-run )
+            TEST=true
+        ;;
+    esac
+    shift
+done
+
+if [ "$HELP" = true ]; then
+    echo "usage: $(basename $0)"
+    echo -e '\t[-n | --dry-run]'
+    echo -e '\t[-h | --help]'
+    exit
+fi
+
+for branch in `git branch -r | grep -v HEAD | grep -v 'develop$' | grep -v v1 | grep -v master | cut -d '/' -f 2-`
+do
+    if [ "$TEST" = false ]; then
+        git push origin :$branch
+    else
+        echo "will delete branch <$branch>"
+    fi
+done

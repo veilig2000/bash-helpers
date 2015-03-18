@@ -1,0 +1,67 @@
+#!/bin/sh
+
+RUN=false
+TEST=false
+LOCAL=false
+
+INREPO=`git rev-parse --is-inside-work-tree 2> /dev/null`
+if [ "$INREPO" != true ]; then
+    echo "You must run this from inside a GIT repository"
+    exit
+fi
+
+while [ "$1" != "" ]; do
+    case $1 in
+        -p | --prefix )
+            PREFIX=$2
+        ;;
+        -f | --force )
+            RUN=true
+        ;;
+        -l )
+            LOCAL=true
+        ;;
+        -n | --dry-run )
+            TEST=true
+        ;;
+    esac
+    shift
+done
+
+if [ "$RUN" = false ] && [ "$TEST" = false ]; then
+    echo "usage: $(basename $0) -p | --prefix <prefix>"
+    echo "\t\t[-f | --force]"
+    echo "\t\t[-n | --dry-run]"
+    echo "\t\t[-l | --local]"
+    exit
+fi
+
+if [[ -z "$PREFIX" ]]; then
+    echo "You must define a prefix to purge. ie: -p feature"
+    exit
+fi
+
+
+if [ "$RUN" = true ]; then
+    echo "+============================+"
+    echo "|           PURGED           |"
+    echo "+============================+"
+    echo "REMOVED THE FOLLOWING BRANCHES\n"
+
+    if [ "$LOCAL" = true ]; then
+        git branch -r | awk -v v=$PREFIX -F/ '$0 ~ v' | awk -F/ '{print $3}' | xargs -I {} git branch -D "${PREFIX}/"{}
+    else
+        git branch -r | awk -v v=$PREFIX -F/ '$0 ~ v' | awk -F/ '{print $3}' | xargs -I {} git push origin ":${PREFIX}/"{}
+    fi
+else
+    echo "+===================================+"
+    echo "|              DRY RUN              |"
+    echo "+===================================+"
+    echo "THE FOLLOWING BRANCHES WILL BE PURGED\n"
+
+    if [ "$LOCAL" = true ]; then
+        git branch -r | awk -v v=$PREFIX -F/ '$0 ~ v' | awk -F/ '{print $3}' | xargs -I {} echo "${PREFIX}/"{}
+    else
+        git branch -r | awk -v v=$PREFIX -F/ '$0 ~ v' | awk -F/ '{print $3}' | xargs -I {} echo ":${PREFIX}/"{}
+    fi
+fi

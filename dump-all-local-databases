@@ -1,0 +1,32 @@
+#!/bin/sh
+
+DATA=0
+
+while [ "$1" != "" ]; do
+    case $1 in
+        -d | --no-data )
+            DATA=1
+        ;;
+    esac
+    shift
+done
+
+for db in `mysql -e "show databases" | grep -Ev "(Database|information_schema|performance_schema)"`; do
+    if [ 1 == $DATA ]; then
+        DUMPNAME="$db.schema-only.sql"
+    else
+        DUMPNAME="$db.sql"
+    fi
+
+    if [ -e $DUMPNAME ]; then
+        echo "removing $(rm -v "$DUMPNAME")..."
+    fi
+
+    echo "dumping $db to $DUMPNAME"
+
+    if [ 1 == $DATA ]; then
+        mysqldump --opt -d --databases $db  > $DUMPNAME
+    else
+        mysqldump --opt --databases $db  > $DUMPNAME
+    fi
+done
